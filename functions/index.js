@@ -17,6 +17,31 @@ const encodeKey = (value) => String(value || '').trim().toLowerCase().replace(/[
 const EMAIL_ADDRESS_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
 const RESERVED_EMAIL_DOMAINS = new Set(['localhost']);
 const RESERVED_EMAIL_TLDS = new Set(['example', 'invalid', 'local', 'localhost', 'test']);
+const DISPOSABLE_EMAIL_DOMAINS = new Set([
+  '10minutemail.com',
+  '10minutemail.net',
+  'dispostable.com',
+  'emailondeck.com',
+  'fakeinbox.com',
+  'getnada.com',
+  'guerrillamail.com',
+  'guerrillamail.net',
+  'maildrop.cc',
+  'mailinator.com',
+  'minuteinbox.com',
+  'moakt.com',
+  'sharklasers.com',
+  'temp-mail.org',
+  'tempail.com',
+  'tempmail.com',
+  'tempmailo.com',
+  'throwawaymail.com',
+  'trashmail.com',
+  'yopmail.com',
+  'yopmail.net',
+]);
+const INVALID_EMAIL_MESSAGE = 'Please enter a valid email address.';
+const TEMPORARY_EMAIL_MESSAGE = 'Temporary or disposable email addresses are not allowed.';
 
 const normalizeEmail = (value) => String(value || '')
   .normalize('NFKC')
@@ -25,6 +50,7 @@ const normalizeEmail = (value) => String(value || '')
   .trim()
   .toLowerCase();
 const getEmailDomain = (value) => normalizeEmail(value).split('@')[1] || '';
+const matchesKnownDomain = (domain, knownDomain) => domain === knownDomain || domain.endsWith(`.${knownDomain}`);
 const hasPublicEmailDomain = (value) => {
   const domain = getEmailDomain(value);
   if (!domain || domain.startsWith('.') || domain.endsWith('.') || domain.includes('..')) {
@@ -42,9 +68,27 @@ const hasPublicEmailDomain = (value) => {
   const tld = labels[labels.length - 1];
   return tld.length >= 2 && !RESERVED_EMAIL_TLDS.has(tld);
 };
-const isValidEmailAddress = (value) => {
+const isDisposableEmailDomain = (value) => {
+  const domain = getEmailDomain(value);
+  if (!domain) return false;
+  return [...DISPOSABLE_EMAIL_DOMAINS].some((entry) => matchesKnownDomain(domain, entry));
+};
+const getEmailValidationResult = (value) => {
   const normalized = normalizeEmail(value);
-  return EMAIL_ADDRESS_REGEX.test(normalized) && hasPublicEmailDomain(normalized);
+  if (!normalized) {
+    return { valid: false, reason: 'missing_email', message: 'Email address is required.' };
+  }
+  if (!EMAIL_ADDRESS_REGEX.test(normalized) || !hasPublicEmailDomain(normalized)) {
+    return { valid: false, reason: 'invalid_email', message: INVALID_EMAIL_MESSAGE };
+  }
+  if (isDisposableEmailDomain(normalized)) {
+    return { valid: false, reason: 'disposable_email', message: TEMPORARY_EMAIL_MESSAGE };
+  }
+  return { valid: true, normalized };
+};
+const isValidEmailAddress = (value) => {
+  const validation = getEmailValidationResult(value);
+  return validation.valid;
 };
 const normalizeContactNumber = (value) => {
   let digits = String(value || '').trim().replace(/\D/g, '');
@@ -110,11 +154,9 @@ const getSnapshotValue = async (ref) => ref.once('value');
 
 const checkEmailAvailabilityWithAdmin = async (rawEmail) => {
   const email = normalizeEmail(rawEmail);
-  if (!email) {
-    return { available: false, verified: false, reason: 'missing_email' };
-  }
-  if (!isValidEmailAddress(email)) {
-    return { available: false, verified: false, reason: 'invalid_email' };
+  const validation = getEmailValidationResult(email);
+  if (!validation.valid) {
+    return { available: false, verified: false, reason: validation.reason };
   }
 
   try {
@@ -196,8 +238,9 @@ const sendOtpEmail = async ({ email, role, contactNumber }) => {
     hasContact: Boolean(contactNumber),
   });
 
-  if (!isValidEmailAddress(email)) {
-    throw new functions.https.HttpsError('invalid-argument', 'Please enter a valid email address.');
+  const validation = getEmailValidationResult(email);
+  if (!validation.valid) {
+    throw new functions.https.HttpsError('invalid-argument', validation.message);
   }
 
   const otp = `${Math.floor(100000 + Math.random() * 900000)}`;

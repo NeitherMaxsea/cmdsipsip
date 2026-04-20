@@ -2,9 +2,10 @@ import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getDatabase } from 'firebase/database';
 import { getStorage } from 'firebase/storage';
-import { getFunctions } from 'firebase/functions';
+import { connectFunctionsEmulator, getFunctions } from 'firebase/functions';
 
 const trimString = (value) => String(value ?? '').trim();
+const TRUTHY_ENV_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const runtimeEnv = typeof window !== 'undefined'
     ? window.__THESIS_CAPSTONE_ENV__ || {}
     : {};
@@ -20,6 +21,10 @@ const resolveConfigValue = (...keys) => {
 
     return '';
 };
+const resolveBooleanConfigValue = (...keys) => {
+    const value = resolveConfigValue(...keys).toLowerCase();
+    return TRUTHY_ENV_VALUES.has(value);
+};
 
 const firebaseConfig = {
     apiKey: resolveConfigValue('VITE_FIREBASE_API_KEY'),
@@ -31,6 +36,10 @@ const firebaseConfig = {
     appId: resolveConfigValue('VITE_FIREBASE_APP_ID'),
 };
 export const firebaseFunctionsRegion = resolveConfigValue('VITE_FIREBASE_FUNCTIONS_REGION') || 'us-central1';
+export const firebaseFunctionsEmulatorHost = resolveConfigValue('VITE_FIREBASE_FUNCTIONS_EMULATOR_HOST') || '127.0.0.1';
+export const firebaseFunctionsEmulatorPort = Number(resolveConfigValue('VITE_FIREBASE_FUNCTIONS_EMULATOR_PORT') || 5001);
+export const shouldUseFirebaseFunctionsEmulator = typeof window !== 'undefined'
+    && resolveBooleanConfigValue('VITE_USE_FIREBASE_FUNCTIONS_EMULATOR');
 
 export const firebaseConfigReady = [
     firebaseConfig.apiKey,
@@ -45,4 +54,12 @@ export const firebaseAuth = firebaseApp ? getAuth(firebaseApp) : null;
 export const realtimeDb = firebaseApp ? getDatabase(firebaseApp) : null;
 export const storage = firebaseApp ? getStorage(firebaseApp) : null;
 export const firebaseFunctions = firebaseApp ? getFunctions(firebaseApp, firebaseFunctionsRegion) : null;
+if (
+    firebaseFunctions
+    && shouldUseFirebaseFunctionsEmulator
+    && Number.isFinite(firebaseFunctionsEmulatorPort)
+    && firebaseFunctionsEmulatorPort > 0
+) {
+    connectFunctionsEmulator(firebaseFunctions, firebaseFunctionsEmulatorHost, firebaseFunctionsEmulatorPort);
+}
 export { firebaseConfig };

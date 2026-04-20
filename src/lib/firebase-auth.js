@@ -16,7 +16,18 @@ import { getApps, initializeApp } from 'firebase/app'
 import { get, ref as dbRef, remove, set } from 'firebase/database'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { httpsCallable } from 'firebase/functions'
-import { firebaseAuth, firebaseConfig, firebaseConfigReady, firebaseFunctions, firebaseFunctionsRegion, realtimeDb, storage } from '@/firebase/client'
+import {
+  firebaseAuth,
+  firebaseConfig,
+  firebaseConfigReady,
+  firebaseFunctions,
+  firebaseFunctionsEmulatorHost,
+  firebaseFunctionsEmulatorPort,
+  firebaseFunctionsRegion,
+  realtimeDb,
+  shouldUseFirebaseFunctionsEmulator,
+  storage,
+} from '@/firebase/client'
 import { buildTemporaryFilePath } from '@/lib/file-url'
 
 const AUTH_PROFILE_STORAGE_KEY = 'thesis_capstone_auth_profile'
@@ -24,6 +35,7 @@ const PROFILE_CACHE_STORAGE_KEY = 'thesis_capstone_profile_cache'
 const REGISTRATION_OTP_PREFIX = 'thesis_capstone_registration_otp'
 const REGISTRATION_REDIRECT_SUPPRESSION_KEY = 'thesis_capstone_registration_redirect_suppressed'
 const APP_ROOT = 'app_data'
+const REGISTRATION_OTP_EXPIRY_MS = 10 * 60 * 1000
 
 const PUBLIC_ROLE_DASHBOARD = {
   admin: '/Admin/AdminDashboard',
@@ -55,7 +67,32 @@ const DEV_ADMIN_EMAIL_ALIASES = new Set([DEV_ADMIN_EMAIL, 'admin@thesis.com'])
 const EMAIL_ADDRESS_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i
 const RESERVED_EMAIL_DOMAINS = new Set(['localhost'])
 const RESERVED_EMAIL_TLDS = new Set(['example', 'invalid', 'local', 'localhost', 'test'])
+const DISPOSABLE_EMAIL_DOMAINS = new Set([
+  '10minutemail.com',
+  '10minutemail.net',
+  'dispostable.com',
+  'emailondeck.com',
+  'fakeinbox.com',
+  'getnada.com',
+  'guerrillamail.com',
+  'guerrillamail.net',
+  'maildrop.cc',
+  'mailinator.com',
+  'minuteinbox.com',
+  'moakt.com',
+  'sharklasers.com',
+  'temp-mail.org',
+  'tempail.com',
+  'tempmail.com',
+  'tempmailo.com',
+  'throwawaymail.com',
+  'trashmail.com',
+  'yopmail.com',
+  'yopmail.net',
+])
 const STRONG_PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/
+const INVALID_EMAIL_MESSAGE = 'Please enter a valid email address.'
+const TEMPORARY_EMAIL_MESSAGE = 'Temporary or disposable email addresses are not allowed.'
 const DEV_ADMIN_PROFILE = {
   first_name: 'Admin',
   middle_initial: '',
@@ -68,6 +105,7 @@ const DEV_ADMIN_PROFILE = {
 }
 
 const trimString = (value) => String(value ?? '').trim()
+const TRUTHY_ENV_VALUES = new Set(['1', 'true', 'yes', 'on'])
 const normalizeRole = (role) => trimString(role).toLowerCase().replace(/\s+/g, '_')
 const encodeKey = (value) => trimString(value).toLowerCase().replace(/[.#$/\[\]]/g, '_')
 const normalizeEmail = (value) => String(value ?? '')
@@ -77,6 +115,7 @@ const normalizeEmail = (value) => String(value ?? '')
   .trim()
   .toLowerCase()
 const getEmailDomain = (value) => normalizeEmail(value).split('@')[1] || ''
+const matchesKnownDomain = (domain, knownDomain) => domain === knownDomain || domain.endsWith(`.${knownDomain}`)
 const hasPublicEmailDomain = (value) => {
   const domain = getEmailDomain(value)
   if (!domain || domain.startsWith('.') || domain.endsWith('.') || domain.includes('..')) {
@@ -94,9 +133,37 @@ const hasPublicEmailDomain = (value) => {
   const tld = labels[labels.length - 1]
   return tld.length >= 2 && !RESERVED_EMAIL_TLDS.has(tld)
 }
-const isValidEmailAddress = (value) => {
+const isDisposableEmailDomain = (value) => {
+  const domain = getEmailDomain(value)
+  if (!domain) return false
+  return [...DISPOSABLE_EMAIL_DOMAINS].some((entry) => matchesKnownDomain(domain, entry))
+}
+const getEmailValidationResult = (
+  value,
+  { allowDevAdminAlias = false } = {},
+) => {
   const normalized = normalizeEmail(value)
-  return EMAIL_ADDRESS_REGEX.test(normalized) && hasPublicEmailDomain(normalized)
+  if (!normalized) {
+    return { valid: false, reason: 'missing_email', message: 'Email address is required.' }
+  }
+  if (allowDevAdminAlias && DEV_ADMIN_EMAIL_ALIASES.has(normalized)) {
+    return { valid: true, normalized }
+  }
+  if (!EMAIL_ADDRESS_REGEX.test(normalized) || !hasPublicEmailDomain(normalized)) {
+    return { valid: false, reason: 'invalid_email', message: INVALID_EMAIL_MESSAGE }
+  }
+  if (isDisposableEmailDomain(normalized)) {
+    return { valid: false, reason: 'disposable_email', message: TEMPORARY_EMAIL_MESSAGE }
+  }
+  return { valid: true, normalized }
+}
+export const getRegistrationEmailValidationMessage = (value) => {
+  const validation = getEmailValidationResult(value)
+  return validation.valid ? '' : validation.message
+}
+const isValidEmailAddress = (value) => {
+  const validation = getEmailValidationResult(value, { allowDevAdminAlias: true })
+  return validation.valid
 }
 const STORAGE_SAFE_URL_MAX_LENGTH = 2048
 const isPlainObject = (value) => Object.prototype.toString.call(value) === '[object Object]'
@@ -376,7 +443,10 @@ export const getFriendlyFirebaseErrorMessage = (
     return 'Unable to verify email availability right now. Please check your Firebase Auth and Realtime Database access, then try again.'
   }
   if (code.includes('invalid-email') || message.includes('invalid email')) {
-    return 'Please enter a valid email address.'
+    return INVALID_EMAIL_MESSAGE
+  }
+  if (message.includes('temporary or disposable')) {
+    return TEMPORARY_EMAIL_MESSAGE
   }
   if (
     code.includes('invalid-credential')
@@ -457,67 +527,170 @@ const getAvailabilityCallable = () => {
 
 const FIREBASE_CONFIGURATION_HELP = 'Firebase is not configured. Add your Firebase web config to public/runtime-config.js or define the Vite Firebase variables before building.'
 const FIREBASE_FUNCTIONS_REGION = trimString(firebaseFunctionsRegion || 'us-central1') || 'us-central1'
+const LOCAL_NETWORK_HOST_PATTERN = /^(127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})$/
+const runtimeEnv = typeof window !== 'undefined'
+  ? window.__THESIS_CAPSTONE_ENV__ || {}
+  : {}
 
-const getOtpHttpUrl = () => {
+const isLocalDevelopmentHost = (hostname) => {
+  const normalizedHost = trimString(hostname).toLowerCase()
+  if (!normalizedHost) return false
+
+  return normalizedHost === 'localhost'
+    || normalizedHost === '[::1]'
+    || normalizedHost.endsWith('.local')
+    || LOCAL_NETWORK_HOST_PATTERN.test(normalizedHost)
+}
+const resolveClientEnvValue = (...keys) => {
+  for (const key of keys) {
+    const runtimeValue = trimString(runtimeEnv?.[key])
+    if (runtimeValue) return runtimeValue
+
+    const viteValue = trimString(import.meta.env?.[key])
+    if (viteValue) return viteValue
+  }
+
+  return ''
+}
+const resolveBooleanClientEnvValue = (...keys) => {
+  const value = resolveClientEnvValue(...keys).toLowerCase()
+  return TRUTHY_ENV_VALUES.has(value)
+}
+const canUseHttpFunctionsFallback = () => {
+  return Boolean(trimString(firebaseConfig?.projectId))
+}
+const canUseLocalDevelopmentOtpFallback = () => {
+  if (typeof window === 'undefined') return false
+  if (!resolveBooleanClientEnvValue('VITE_ENABLE_LOCAL_DEV_OTP_FALLBACK')) return false
+  return Boolean(import.meta.env?.DEV) && isLocalDevelopmentHost(window.location?.hostname)
+}
+const createLocalDevelopmentOtpFallback = ({ email, role, contactNumber, error } = {}) => {
+  const normalizedEmail = normalizeAuthEmail(email)
+  const now = Date.now()
+  const otp = `${Math.floor(100000 + Math.random() * 900000)}`
+  const record = {
+    email: normalizedEmail,
+    role: normalizeRole(role) || 'user',
+    contact_number: trimString(contactNumber),
+    otp,
+    delivery: 'local-dev',
+    delivered_at: now,
+    expiresAt: now + REGISTRATION_OTP_EXPIRY_MS,
+    createdAt: now,
+  }
+
+  writeOtpSession(normalizedEmail, record)
+
+  console.warn('[registration][otp] Falling back to a local development OTP because Firebase Functions is unavailable.', {
+    email: normalizedEmail,
+    code: otp,
+    reason: String(error?.code || error?.message || 'unknown'),
+  })
+
+  return {
+    sent: true,
+    delivery: 'local-dev',
+    code: otp,
+    expiresAt: record.expiresAt,
+  }
+}
+
+const getFunctionsProjectId = () => {
   const projectId = trimString(firebaseConfig?.projectId)
   if (!projectId) {
     throw new Error('OTP service is not configured. Firebase project ID is unavailable.')
   }
-  return `https://${FIREBASE_FUNCTIONS_REGION}-${projectId}.cloudfunctions.net/sendRegistrationOtpHttp`
+  return projectId
 }
-const getAvailabilityHttpUrl = () => {
-  const projectId = trimString(firebaseConfig?.projectId)
-  if (!projectId) {
-    throw new Error('Registration availability service is not configured. Firebase project ID is unavailable.')
+const getLocalFunctionsHttpBaseUrl = () => {
+  const projectId = getFunctionsProjectId()
+  const host = trimString(resolveClientEnvValue('VITE_FIREBASE_FUNCTIONS_EMULATOR_HOST')) || trimString(firebaseFunctionsEmulatorHost) || '127.0.0.1'
+  const port = Number(resolveClientEnvValue('VITE_FIREBASE_FUNCTIONS_EMULATOR_PORT') || firebaseFunctionsEmulatorPort || 5001)
+  if (!host || !Number.isFinite(port) || port <= 0) {
+    return ''
   }
-  return `https://${FIREBASE_FUNCTIONS_REGION}-${projectId}.cloudfunctions.net/checkRegistrationAvailabilityHttp`
+  return `http://${host}:${port}/${projectId}/${FIREBASE_FUNCTIONS_REGION}`
+}
+const getCloudFunctionsHttpBaseUrl = () => {
+  const projectId = getFunctionsProjectId()
+  return `https://${FIREBASE_FUNCTIONS_REGION}-${projectId}.cloudfunctions.net`
+}
+const getFunctionsHttpBaseUrls = () => {
+  const urls = []
+  if (shouldUseFirebaseFunctionsEmulator) {
+    const localBaseUrl = getLocalFunctionsHttpBaseUrl()
+    if (localBaseUrl) {
+      urls.push(localBaseUrl)
+    }
+  }
+  urls.push(getCloudFunctionsHttpBaseUrl())
+  return [...new Set(urls.filter(Boolean))]
+}
+const buildFunctionHttpError = ({ data, response, fallbackMessage }) => {
+  const error = new Error(
+    data?.error?.message
+    || data?.message
+    || `${fallbackMessage} HTTP ${response.status}.`,
+  )
+  error.code = String(data?.error?.status || `http/${response.status}`)
+  error.details = data?.error?.details
+  return error
+}
+const requestFunctionHttpJson = async ({ functionName, method = 'GET', payload = null, query = null, fallbackMessage }) => {
+  let lastError = null
+  for (const baseUrl of getFunctionsHttpBaseUrls()) {
+    const url = new URL(`${baseUrl.replace(/\/+$/, '')}/${functionName}`)
+    if (query && typeof query === 'object') {
+      Object.entries(query).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && `${value}` !== '') {
+          url.searchParams.set(key, value)
+        }
+      })
+    }
+
+    try {
+      const response = await fetch(url.toString(), {
+        method,
+        headers: method === 'POST'
+          ? { 'Content-Type': 'text/plain;charset=UTF-8' }
+          : undefined,
+        body: method === 'POST' && payload ? JSON.stringify(payload) : undefined,
+      })
+
+      const data = await response.json().catch(() => null)
+      if (!response.ok) {
+        throw buildFunctionHttpError({ data, response, fallbackMessage })
+      }
+
+      return data || {}
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  throw lastError || new Error(fallbackMessage)
 }
 
 const sendRegistrationOtpViaHttp = async (payload) => {
-  const response = await fetch(getOtpHttpUrl(), {
+  const data = await requestFunctionHttpJson({
+    functionName: 'sendRegistrationOtpHttp',
     method: 'POST',
-    headers: {
-      'Content-Type': 'text/plain;charset=UTF-8',
-    },
-    body: JSON.stringify(payload),
+    payload,
+    fallbackMessage: 'Failed to send OTP email.',
   })
-
-  const data = await response.json().catch(() => null)
-
-  if (!response.ok) {
-    const error = new Error(
-      data?.error?.message
-      || data?.message
-      || `Failed to send OTP email. HTTP ${response.status}.`,
-    )
-    error.code = String(data?.error?.status || `http/${response.status}`)
-    error.details = data?.error?.details
-    throw error
-  }
 
   return data || { sent: true, delivery: 'smtp' }
 }
 const probeRegistrationAvailabilityViaHttp = async ({ email = '', contactNumber = '' } = {}) => {
-  const params = new URLSearchParams()
-  if (email) params.set('email', email)
-  if (contactNumber) params.set('contactNumber', contactNumber)
-
-  const response = await fetch(`${getAvailabilityHttpUrl()}?${params.toString()}`, {
+  const data = await requestFunctionHttpJson({
+    functionName: 'checkRegistrationAvailabilityHttp',
     method: 'GET',
+    query: {
+      email,
+      contactNumber,
+    },
+    fallbackMessage: 'Failed to check registration availability.',
   })
-
-  const data = await response.json().catch(() => null)
-
-  if (!response.ok) {
-    const error = new Error(
-      data?.error?.message
-      || data?.message
-      || `Failed to check registration availability. HTTP ${response.status}.`,
-    )
-    error.code = String(data?.error?.status || `http/${response.status}`)
-    error.details = data?.error?.details
-    throw error
-  }
 
   return data || {}
 }
@@ -536,15 +709,17 @@ const probeServerRegistrationAvailability = async ({ email = '', contactNumber =
   } catch (error) {
     const code = String(error?.code || '').toLowerCase()
     if (
-      code.includes('permission')
+      code.includes('network-request-failed')
+      || code.includes('permission')
       || code.includes('internal')
       || code.includes('unavailable')
-      || code.includes('not-found')
     ) {
-      try {
-        return await probeRegistrationAvailabilityViaHttp(payload)
-      } catch {
-        return null
+      if (canUseHttpFunctionsFallback()) {
+        try {
+          return await probeRegistrationAvailabilityViaHttp(payload)
+        } catch {
+          return null
+        }
       }
     }
     return null
@@ -1197,7 +1372,9 @@ export const checkEmailAvailability = async (email) => {
   const message = reason === 'missing_email'
     ? 'Email address is required.'
     : reason === 'invalid_email'
-      ? 'Please enter a valid email address.'
+      ? INVALID_EMAIL_MESSAGE
+      : reason === 'disposable_email'
+        ? TEMPORARY_EMAIL_MESSAGE
     : 'Unable to verify email availability right now. Please check your Firebase Auth and Realtime Database access, then try again.'
 
   const error = new Error(message)
@@ -1207,17 +1384,17 @@ export const checkEmailAvailability = async (email) => {
 }
 
 export const probeEmailAvailability = async (email, options = {}) => {
-  const preferServer = options.preferServer !== false
+  const preferServer = options.preferServer === true
+  const allowBestEffort = options.allowBestEffort !== false
   const normalizedEmail = normalizeAuthEmail(email)
-  if (!normalizedEmail) {
-    return { available: false, verified: false, reason: 'missing_email' }
-  }
-  if (!isValidEmailAddress(normalizedEmail)) {
-    return { available: false, verified: false, reason: 'invalid_email' }
+  const validation = getEmailValidationResult(normalizedEmail, { allowDevAdminAlias: true })
+  if (!validation.valid) {
+    return { available: false, verified: false, reason: validation.reason }
   }
   ensureFirebaseReady()
 
   let authCheckFailed = false
+  let emailIndexProbeFailed = false
   try {
     const signInMethods = await fetchSignInMethodsForEmail(firebaseAuth, normalizedEmail)
     if (Array.isArray(signInMethods) && signInMethods.length > 0) {
@@ -1274,11 +1451,24 @@ export const probeEmailAvailability = async (email, options = {}) => {
     }
   } catch (error) {
     if (!isFirebasePermissionError(error)) throw error
+    emailIndexProbeFailed = true
   }
 
-  const serverProbe = await probeServerRegistrationAvailability({ email: normalizedEmail })
-  if (serverProbe?.email) {
-    return serverProbe.email
+  if (preferServer) {
+    const serverProbe = await probeServerRegistrationAvailability({ email: normalizedEmail })
+    if (serverProbe?.email?.verified) {
+      return serverProbe.email
+    }
+  }
+
+  if (allowBestEffort) {
+    return {
+      available: true,
+      verified: true,
+      reason: authCheckFailed || emailIndexProbeFailed
+        ? 'local_best_effort_available'
+        : 'verified_available',
+    }
   }
 
   return {
@@ -1292,11 +1482,6 @@ export const checkContactAvailability = async (contactNumber) => {
   ensureFirebaseReady()
   const normalizedContact = normalizeContactNumber(contactNumber)
   if (!normalizedContact) return true
-
-  const serverProbe = await probeServerRegistrationAvailability({ contactNumber: normalizedContact })
-  if (serverProbe?.contact?.verified) {
-    return Boolean(serverProbe.contact.available)
-  }
 
   try {
     const indexRef = dbRef(realtimeDb, `contact_index/${encodeKey(normalizedContact)}`)
@@ -1329,8 +1514,14 @@ export const checkContactAvailability = async (contactNumber) => {
     return true
   } catch (error) {
     if (!isFirebasePermissionError(error)) throw error
-    return true
   }
+
+  const serverProbe = await probeServerRegistrationAvailability({ contactNumber: normalizedContact })
+  if (serverProbe?.contact?.verified) {
+    return Boolean(serverProbe.contact.available)
+  }
+
+  return true
 }
 
 export const createStaffAuthUser = async ({ email, password, displayName }) => {
@@ -1363,8 +1554,9 @@ export const createStaffAuthUser = async ({ email, password, displayName }) => {
 export const sendRegistrationOtp = async ({ email, role, contactNumber }) => {
   ensureFirebaseReady()
   const normalizedEmail = normalizeAuthEmail(email)
-  if (!isValidEmailAddress(normalizedEmail)) {
-    throw new Error('Please enter a valid email address.')
+  const validation = getEmailValidationResult(normalizedEmail)
+  if (!validation.valid) {
+    throw new Error(validation.message)
   }
   const availableEmail = await checkEmailAvailability(normalizedEmail)
   if (!availableEmail) {
@@ -1374,28 +1566,57 @@ export const sendRegistrationOtp = async ({ email, role, contactNumber }) => {
   if (!availableContact) {
     throw new Error('Existing contact number detected. This mobile number is already registered.')
   }
-  const callable = getOtpCallable()
   const payload = {
     email: normalizedEmail,
     role: normalizeRole(role) || 'user',
     contactNumber: trimString(contactNumber),
   }
+  clearOtpSession(normalizedEmail)
+
+  if (canUseHttpFunctionsFallback() && !shouldUseFirebaseFunctionsEmulator) {
+    try {
+      return await sendRegistrationOtpViaHttp(payload)
+    } catch (httpError) {
+      const httpCode = String(httpError?.code || '').toLowerCase()
+      if (
+        !httpCode.includes('network-request-failed')
+        && !httpCode.includes('permission')
+        && !httpCode.includes('internal')
+        && !httpCode.includes('unavailable')
+        && !httpCode.includes('not-found')
+        && !httpCode.startsWith('http/')
+      ) {
+        throw new Error(getFriendlyFirebaseErrorMessage(httpError, 'Failed to send OTP email.', 'otp'))
+      }
+    }
+  }
+
+  const callable = getOtpCallable()
   try {
     const result = await callable(payload)
     return result?.data || { sent: true, delivery: 'smtp' }
   } catch (error) {
     const code = String(error?.code || '').toLowerCase()
     if (
-      code.includes('permission')
+      code.includes('network-request-failed')
+      || code.includes('permission')
       || code.includes('internal')
       || code.includes('unavailable')
       || code.includes('not-found')
     ) {
-      try {
-        return await sendRegistrationOtpViaHttp(payload)
-      } catch (fallbackError) {
-        throw new Error(getFriendlyFirebaseErrorMessage(fallbackError, 'Failed to send OTP email.', 'otp'))
+      if (canUseHttpFunctionsFallback()) {
+        try {
+          return await sendRegistrationOtpViaHttp(payload)
+        } catch (fallbackError) {
+          throw new Error(getFriendlyFirebaseErrorMessage(fallbackError, 'Failed to send OTP email.', 'otp'))
+        }
       }
+    }
+    if (canUseLocalDevelopmentOtpFallback()) {
+      return createLocalDevelopmentOtpFallback({
+        ...payload,
+        error,
+      })
     }
     throw new Error(getFriendlyFirebaseErrorMessage(error, 'Failed to send OTP email.', 'otp'))
   }
@@ -1414,7 +1635,10 @@ export const verifyRegistrationOtpCode = async ({ email, otp }) => {
   }
 
   if (!record) {
-    record = readOtpSession(normalizedEmail)
+    const localRecord = readOtpSession(normalizedEmail)
+    if (canUseLocalDevelopmentOtpFallback() && localRecord?.delivery === 'local-dev') {
+      record = localRecord
+    }
   }
 
   if (!record) {
@@ -1520,8 +1744,9 @@ const normalizeRegistrationPayload = (form) => {
 export const registerWithFirebase = async (form) => {
   ensureFirebaseReady()
   const payload = normalizeRegistrationPayload(form)
-  if (!isValidEmailAddress(payload.email)) {
-    throw new Error('Please enter a valid email address.')
+  const validation = getEmailValidationResult(payload.email)
+  if (!validation.valid) {
+    throw new Error(validation.message)
   }
   const available = await checkEmailAvailability(payload.email)
   if (!available) {

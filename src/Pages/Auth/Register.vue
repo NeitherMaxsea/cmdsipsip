@@ -11,6 +11,7 @@ import {
   checkContactAvailability as checkFirebaseContactAvailability,
   checkEmailAvailability as checkFirebaseEmailAvailability,
   getFriendlyFirebaseErrorMessage,
+  getRegistrationEmailValidationMessage,
   registerWithFirebase,
   sendRegistrationOtp,
   verifyRegistrationOtpCode,
@@ -119,6 +120,7 @@ const form = useForm({
 const otpSent = ref(false)
 const otpVerified = ref(false)
 const otpCode = ref('')
+const otpDeliveryMode = ref('')
 const emailForOtp = ref('')
 const contactForOtp = ref('')
 const availableIdentityEmail = ref('')
@@ -291,6 +293,7 @@ const otpStatusClass = computed(() => {
 
   return 'border-sky-300 bg-sky-50 text-sky-700'
 })
+const isLocalDevelopmentOtp = computed(() => otpDeliveryMode.value === 'local-dev')
 const otpToastLoadingLabel = computed(() => (
   form.role === 'business'
     ? 'Sending OTP for your business account...'
@@ -645,38 +648,16 @@ const DUPLICATE_EMAIL_MESSAGE = 'This email is already taken.'
 const LEGACY_DUPLICATE_EMAIL_MESSAGE = 'This email is already registered.'
 const DUPLICATE_CONTACT_MESSAGE = 'Existing contact number detected. This mobile number is already registered.'
 const EMAIL_AVAILABLE_MESSAGE = 'This email is available.'
-const RESERVED_EMAIL_DOMAINS = new Set(['localhost'])
-const RESERVED_EMAIL_TLDS = new Set(['example', 'invalid', 'local', 'localhost', 'test'])
 const normalizeEmailInput = (value) => String(value || '')
   .normalize('NFKC')
   .replace(/[\u200B-\u200D\uFEFF]/g, '')
   .replace(/\s+/g, '')
   .trim()
   .toLowerCase()
-const getEmailDomain = (value) => normalizeEmailInput(value).split('@')[1] || ''
-const hasPublicEmailDomain = (value) => {
-  const domain = getEmailDomain(value)
-  if (!domain || domain.startsWith('.') || domain.endsWith('.') || domain.includes('..')) {
-    return false
-  }
-  if (RESERVED_EMAIL_DOMAINS.has(domain)) {
-    return false
-  }
-
-  const labels = domain.split('.').filter(Boolean)
-  if (labels.length < 2) {
-    return false
-  }
-
-  const tld = labels[labels.length - 1]
-  return tld.length >= 2 && !RESERVED_EMAIL_TLDS.has(tld)
-}
-const isValidRegistrationEmail = (value) => {
-  const normalized = normalizeEmailInput(value)
-  return EMAIL_REGEX.test(normalized) && hasPublicEmailDomain(normalized)
-}
+const getRegistrationEmailError = (value) => getRegistrationEmailValidationMessage(value)
 const getNormalizedFormEmail = () => normalizeEmailInput(form.email)
 const getNormalizedFormContact = () => String(form.contact_number || '').trim()
+const emailDomainHint = computed(() => 'Use any real email address. Disposable or temporary email addresses are not allowed.')
 const clearVerifiedIdentityAvailability = () => {
   availableIdentityEmail.value = ''
   availableIdentityContact.value = ''
@@ -803,8 +784,9 @@ const checkEmailAvailability = async () => {
     return false
   }
 
-  if (!isValidRegistrationEmail(email)) {
-    form.setError('email', INVALID_EMAIL_MESSAGE)
+  const emailValidationMessage = getRegistrationEmailError(email)
+  if (emailValidationMessage) {
+    form.setError('email', emailValidationMessage)
     emailIsAvailable.value = false
     return false
   }
@@ -936,9 +918,10 @@ const sendOtp = async () => {
     Swal.fire('Oops','Please enter contact number','warning')
     return false
   }
-  if (!isValidRegistrationEmail(normalizedEmail)) {
-    form.setError('email', INVALID_EMAIL_MESSAGE)
-    Swal.fire('Invalid Email', INVALID_EMAIL_MESSAGE, 'warning')
+  const emailValidationMessage = getRegistrationEmailError(normalizedEmail)
+  if (emailValidationMessage) {
+    form.setError('email', emailValidationMessage)
+    Swal.fire('Invalid Email', emailValidationMessage, 'warning')
     return false
   }
   if (normalizedEmail.length > MAX_EMAIL_LENGTH) {
@@ -949,16 +932,24 @@ const sendOtp = async () => {
 
   sendingOtp.value=true
   otpSent.value = false
+  otpDeliveryMode.value = ''
   emailForOtp.value = normalizedEmail
   try{
-    await sendRegistrationOtp({
+    const otpResult = await sendRegistrationOtp({
       email: emailForOtp.value,
       role: form.role,
       contactNumber: form.contact_number,
     })
     otpSent.value=true
     contactForOtp.value = String(form.contact_number || '').trim()
-    setOtpStatus('success', 'OTP sent. Check your email for the 6-digit code.')
+    if (otpResult?.delivery === 'local-dev') {
+      otpDeliveryMode.value = 'local-dev'
+      otpCode.value = String(otpResult.code || '').trim()
+      setOtpStatus('success', 'Development OTP generated locally. The code has been filled in for you.')
+    } else {
+      otpDeliveryMode.value = 'smtp'
+      setOtpStatus('success', 'OTP sent. Check your email for the 6-digit code.')
+    }
     startResendCooldown(60)
     return true
   }catch(err){
@@ -973,7 +964,7 @@ const sendOtp = async () => {
     )
     const duplicateEmail = /email.+(taken|exists|already|registered)/i.test(String(emailErr || '')) || /email.+(taken|exists|already|registered)/i.test(msg)
     const duplicateContact = /contact.+(taken|exists|already|registered)/i.test(String(contactErr || '')) || /contact.+(taken|exists|already|registered)/i.test(msg)
-    const invalidEmailFormat = /valid email|email.+(invalid|format)/i.test(String(emailErr || '')) || /valid email|email.+(invalid|format)/i.test(msg)
+    const invalidEmailPolicy = /valid email|temporary|disposable|email.+(invalid|format)/i.test(String(emailErr || '')) || /valid email|temporary|disposable|email.+(invalid|format)/i.test(msg)
 
     if (timeoutError) {
       const timeoutMessage = 'OTP sending is taking too long right now. Please tap Resend OTP.'
@@ -1017,8 +1008,8 @@ const sendOtp = async () => {
       return false
     }
 
-    if (invalidEmailFormat) {
-      const invalidEmailMessage = emailErr || INVALID_EMAIL_MESSAGE
+    if (invalidEmailPolicy) {
+      const invalidEmailMessage = emailErr || msg || INVALID_EMAIL_MESSAGE
       form.setError('email', invalidEmailMessage)
       setOtpStatus('error', invalidEmailMessage)
       showOtpStatusToast('error', invalidEmailMessage, 3200)
@@ -1158,7 +1149,12 @@ const validateEmailAvailabilityOnBlur = async () => {
   if (String(form.email || '') !== email) {
     form.email = email
   }
-  if (!email || email.length > MAX_EMAIL_LENGTH || !isValidRegistrationEmail(email)) return
+  if (!email || email.length > MAX_EMAIL_LENGTH) return
+  const emailValidationMessage = getRegistrationEmailError(email)
+  if (emailValidationMessage) {
+    form.setError('email', emailValidationMessage)
+    return
+  }
   await checkEmailAvailability()
 }
 const validateContactAvailabilityOnBlur = async () => {
@@ -1276,8 +1272,11 @@ const validateStep = (s) => {
       errors.email = 'Email address is required.'
     } else if (normalizedEmail.length > MAX_EMAIL_LENGTH) {
       errors.email = `Email address must not be greater than ${MAX_EMAIL_LENGTH} characters.`
-    } else if (!isValidRegistrationEmail(normalizedEmail)) {
-      errors.email = INVALID_EMAIL_MESSAGE
+    } else {
+      const emailValidationMessage = getRegistrationEmailError(normalizedEmail)
+      if (emailValidationMessage) {
+        errors.email = emailValidationMessage
+      }
     }
 
     if (!hasText(contactLocal.value)) {
@@ -1805,7 +1804,7 @@ onBeforeUnmount(()=>{
               <div :class="fieldCardClass('email')" class="mb-3 flex flex-col gap-1 [&>label]:font-semibold [&>label]:text-teal-700">
                 <label>Email Address</label>
                 <TextInput v-model="form.email" :class="textInputClass('email')" required @blur="validateEmailAvailabilityOnBlur"/>
-                <p class="text-xs text-slate-500 mt-1">Use a public email domain like gmail.com, yahoo.com, outlook.com, or .com.ph.</p>
+                <p class="text-xs text-slate-500 mt-1">{{ emailDomainHint }}</p>
                 <p v-if="form.errors.email" class="text-rose-600 text-xs mt-1">{{ form.errors.email }}</p>
               </div>
               <div :class="fieldCardClass('contact_number')" class="mb-3 flex flex-col gap-1 [&>label]:font-semibold [&>label]:text-teal-700">
@@ -2037,7 +2036,7 @@ onBeforeUnmount(()=>{
               <div :class="fieldCardClass('email')" class="mb-3 flex flex-col gap-1 [&>label]:font-semibold [&>label]:text-teal-700">
                 <label>Email Address</label>
                 <TextInput v-model="form.email" :class="textInputClass('email')" required @blur="validateEmailAvailabilityOnBlur"/>
-                <p class="text-xs text-slate-500 mt-1">Use a public email domain like gmail.com, yahoo.com, outlook.com, or .com.ph.</p>
+                <p class="text-xs text-slate-500 mt-1">{{ emailDomainHint }}</p>
                 <p v-if="form.errors.email" class="text-rose-600 text-xs mt-1">{{ form.errors.email }}</p>
               </div>
               <div :class="fieldCardClass('contact_number')" class="mb-3 flex flex-col gap-1 [&>label]:font-semibold [&>label]:text-teal-700">
@@ -2413,7 +2412,10 @@ onBeforeUnmount(()=>{
           <span class="h-[0.95rem] w-[0.95rem] rounded-full border-2 border-blue-200 border-t-[#3B82F6] animate-spin" aria-hidden="true"></span>
           <span>Sending verification code to <strong>{{ emailForOtp || form.email }}</strong>...</span>
         </div>
-        <p v-else-if="otpSent" class="mb-4 text-sm text-slate-300">We sent a 6-digit code to <strong class="text-white">{{ emailForOtp }}</strong></p>
+        <p v-else-if="otpSent" class="mb-4 text-sm text-slate-300">
+          {{ isLocalDevelopmentOtp ? 'A local development OTP is ready for' : 'We sent a 6-digit code to' }}
+          <strong class="text-white">{{ emailForOtp }}</strong>
+        </p>
         <p v-else class="mb-4 text-sm text-slate-300">Waiting to send OTP to <strong class="text-white">{{ emailForOtp || form.email }}</strong>.</p>
         <TextInput
           v-model="otpCode"
