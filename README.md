@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Thesis Capstone (Firebase + Vue)
 
 This project is now a **Vite + Vue 3 SPA** intended to be hosted on **Firebase Hosting** and use **Firebase Auth + Realtime Database** as the backend.
@@ -21,3 +22,6 @@ This project is now a **Vite + Vue 3 SPA** intended to be hosted on **Firebase H
 3. Deploy:
    - `firebase deploy`
 
+=======
+# cmdsipsip
+>>>>>>> 620161fa7fd024cf1aceb4a88e22a25f55b8b221
