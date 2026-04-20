@@ -1,0 +1,39 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "profiles": {
+      ".read": "auth != null && (root.child('profiles/' + auth.uid + '/role').val() === 'admin' || auth.token.email === 'admin@thesis.local' || auth.token.email === 'admin@thesis.com')",
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('profiles/' + auth.uid + '/role').val() === 'admin' || auth.token.email === 'admin@thesis.local' || auth.token.email === 'admin@thesis.com')",
+        ".write": "auth != null && (auth.uid === $uid || root.child('profiles/' + auth.uid + '/role').val() === 'admin' || auth.token.email === 'admin@thesis.local' || auth.token.email === 'admin@thesis.com')"
+      }
+    },
+    "email_index": {
+      ".read": true,
+      "$key": {
+        ".write": "auth != null"
+      }
+    },
+    "contact_index": {
+      ".read": true,
+      "$key": {
+        ".write": "auth != null"
+      }
+    },
+    "registration_otps": {
+      ".read": true,
+      ".write": true
+    },
+    "app_data": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "service_requests": {
+        ".indexOn": ["user_id"]
+      },
+      "notifications": {
+        ".indexOn": ["user_id"]
+      }
+    }
+  }
+}
