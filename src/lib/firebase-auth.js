@@ -16,7 +16,7 @@ import { getApps, initializeApp } from 'firebase/app'
 import { get, ref as dbRef, remove, set } from 'firebase/database'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { httpsCallable } from 'firebase/functions'
-import { firebaseAuth, firebaseConfig, firebaseConfigReady, firebaseFunctions, realtimeDb, storage } from '@/firebase/client'
+import { firebaseAuth, firebaseConfig, firebaseConfigReady, firebaseFunctions, firebaseFunctionsRegion, realtimeDb, storage } from '@/firebase/client'
 import { buildTemporaryFilePath } from '@/lib/file-url'
 
 const AUTH_PROFILE_STORAGE_KEY = 'thesis_capstone_auth_profile'
@@ -415,7 +415,8 @@ const getAvailabilityCallable = () => {
   return httpsCallable(firebaseFunctions, 'checkRegistrationAvailability')
 }
 
-const FIREBASE_FUNCTIONS_REGION = trimString(import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || 'us-central1') || 'us-central1'
+const FIREBASE_CONFIGURATION_HELP = 'Firebase is not configured. Add your Firebase web config to public/runtime-config.js or define the Vite Firebase variables before building.'
+const FIREBASE_FUNCTIONS_REGION = trimString(firebaseFunctionsRegion || 'us-central1') || 'us-central1'
 
 const getOtpHttpUrl = () => {
   const projectId = trimString(firebaseConfig?.projectId)
@@ -550,7 +551,7 @@ const baseAuthState = () => ({
 
 const ensureFirebaseReady = () => {
   if (!firebaseConfigReady || !firebaseAuth || !realtimeDb || !storage) {
-    throw new Error('Firebase is not configured. Add your Vite Firebase environment variables first.')
+    throw new Error(FIREBASE_CONFIGURATION_HELP)
   }
 }
 
@@ -559,7 +560,7 @@ let secondaryAuth = null
 
 const getSecondaryAuth = () => {
   if (!firebaseConfigReady) {
-    throw new Error('Firebase is not configured. Add your Vite Firebase environment variables first.')
+    throw new Error(FIREBASE_CONFIGURATION_HELP)
   }
   if (secondaryAuth) return secondaryAuth
   const existing = getApps().find((app) => app.name === SECONDARY_AUTH_APP_NAME)

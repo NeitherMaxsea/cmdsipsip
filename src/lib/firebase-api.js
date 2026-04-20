@@ -6022,7 +6022,7 @@ export const canHandleViaFirebase = (config = {}) => {
 
 export const firebaseApiAdapter = async (config) => {
   if (!firebaseConfigReady) {
-    throw buildAxiosError(config, 'Firebase is not configured. Add your Vite Firebase environment variables first.', 503)
+    throw buildAxiosError(config, 'Firebase is not configured. Add your Firebase web config to public/runtime-config.js or define the Vite Firebase variables before building.', 503)
   }
 
   try {

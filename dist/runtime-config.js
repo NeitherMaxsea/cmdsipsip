@@ -1,0 +1,11 @@
+window.__THESIS_CAPSTONE_ENV__ = {
+  ...window.__THESIS_CAPSTONE_ENV__,
+  VITE_FIREBASE_API_KEY: 'AIzaSyBRfMgPpuVBCwameAsCd5NKAagdcq9WbWU',
+  VITE_FIREBASE_AUTH_DOMAIN: 'thesiscapstone-785e2.firebaseapp.com',
+  VITE_FIREBASE_DATABASE_URL: 'https://thesiscapstone-785e2-default-rtdb.firebaseio.com/',
+  VITE_FIREBASE_PROJECT_ID: 'thesiscapstone-785e2',
+  VITE_FIREBASE_STORAGE_BUCKET: 'thesiscapstone-785e2.firebasestorage.app',
+  VITE_FIREBASE_MESSAGING_SENDER_ID: '483411650427',
+  VITE_FIREBASE_APP_ID: '1:483411650427:web:440fdeccb8a6a0ea7f7fde',
+  VITE_FIREBASE_FUNCTIONS_REGION: 'us-central1',
+};
