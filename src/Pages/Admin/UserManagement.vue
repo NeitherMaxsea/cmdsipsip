@@ -12,13 +12,6 @@
       <!-- Add User Button -->
       <div class="flex flex-wrap gap-2">
         <button
-          @click="refreshFromFirebase"
-          :disabled="isRefreshingUsers"
-          class="rounded-xl border border-teal-200 bg-white px-5 py-2.5 text-sm font-semibold text-teal-700 shadow-sm transition hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {{ isRefreshingUsers ? 'Refreshing...' : 'Refresh from Firebase' }}
-        </button>
-        <button
           @click="showAddModal = true"
           class="rounded-xl bg-gradient-to-r from-teal-600 via-cyan-500 to-sky-500 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_18px_40px_rgba(13,148,136,0.28)] transition hover:opacity-90"
         >
@@ -546,10 +539,11 @@ export default {
       showPassword: false,
       showPasswordConfirmation: false,
       isCreatingUser: false,
-      isRefreshingUsers: false,
       isLoadingUsers: true,
       usersFetchRequestId: 0,
       usersSyncTimer: null,
+      queuedUsersFetchTimer: null,
+      queuedUsersFetchOptions: null,
       liveUsersUnsubscribe: null,
       liveResubmissionsUnsubscribe: null,
       liveAdminReviewQueueUnsubscribe: null,
@@ -831,6 +825,7 @@ export default {
   beforeUnmount() {
     this.unsubscribeLiveUsers()
     this.stopUsersSync()
+    this.cancelQueuedUsersFetch()
     window.removeEventListener('focus', this.handleWindowFocus)
     document.removeEventListener('visibilitychange', this.handleVisibilityChange)
     window.removeEventListener('storage', this.handleResubmissionStorage)
@@ -936,8 +931,12 @@ export default {
       this.stopUsersSync()
       this.usersSyncTimer = window.setInterval(() => {
         if (this.liveUsersUnsubscribe || document.visibilityState !== 'visible' || this.showAddModal) return
-        this.fetchUsers({ silent: true, preserveExistingOnFailure: true })
-      }, 5000)
+        this.queueUsersFetch({
+          silent: true,
+          preserveExistingOnFailure: true,
+          forceFresh: true,
+        }, 120)
+      }, 2500)
     },
 
     stopUsersSync() {
@@ -950,21 +949,61 @@ export default {
     handleWindowFocus() {
       if (this.liveUsersUnsubscribe) return
       if (this.showAddModal) return
-      this.fetchUsers({ silent: true, preserveExistingOnFailure: true })
+      this.queueUsersFetch({
+        silent: true,
+        preserveExistingOnFailure: true,
+        forceFresh: true,
+      }, 0)
     },
 
     handleVisibilityChange() {
       if (this.liveUsersUnsubscribe) return
       if (document.visibilityState !== 'visible' || this.showAddModal) return
-      this.fetchUsers({ silent: true, preserveExistingOnFailure: true })
+      this.queueUsersFetch({
+        silent: true,
+        preserveExistingOnFailure: true,
+        forceFresh: true,
+      }, 0)
     },
     handleResubmissionStorage(event) {
       if (!event || event.key !== 'thesis_capstone_profile_resubmissions') return
-      this.fetchUsers({ silent: true, preserveExistingOnFailure: true })
+      this.queueUsersFetch({
+        silent: true,
+        preserveExistingOnFailure: true,
+        forceFresh: true,
+      }, 90)
+    },
+
+    queueUsersFetch(options = {}, delay = 0) {
+      const nextOptions = {
+        ...this.queuedUsersFetchOptions,
+        ...options,
+      }
+      this.queuedUsersFetchOptions = nextOptions
+
+      if (this.queuedUsersFetchTimer) {
+        window.clearTimeout(this.queuedUsersFetchTimer)
+      }
+
+      this.queuedUsersFetchTimer = window.setTimeout(() => {
+        const queuedOptions = this.queuedUsersFetchOptions || {}
+        this.queuedUsersFetchTimer = null
+        this.queuedUsersFetchOptions = null
+        this.fetchUsers(queuedOptions)
+      }, Math.max(0, Number(delay) || 0))
+    },
+
+    cancelQueuedUsersFetch() {
+      if (this.queuedUsersFetchTimer) {
+        window.clearTimeout(this.queuedUsersFetchTimer)
+        this.queuedUsersFetchTimer = null
+      }
+      this.queuedUsersFetchOptions = null
     },
 
     subscribeLiveUsers() {
       this.unsubscribeLiveUsers()
+      this.cancelQueuedUsersFetch()
       this.hasLiveUsersSnapshot = false
 
       if (!firebaseConfigReady || !realtimeDb) return
@@ -978,42 +1017,57 @@ export default {
           () => {
             const hadSnapshot = this.hasLiveUsersSnapshot
             this.hasLiveUsersSnapshot = true
-            this.fetchUsers({
+            this.queueUsersFetch({
               silent: hadSnapshot,
               preserveExistingOnFailure: true,
-            })
+              forceFresh: true,
+            }, hadSnapshot ? 110 : 0)
           },
           () => {
             this.unsubscribeLiveUsers()
-            this.fetchUsers({ silent: true, preserveExistingOnFailure: true })
+            this.queueUsersFetch({
+              silent: true,
+              preserveExistingOnFailure: true,
+              forceFresh: true,
+            }, 0)
           },
         )
         this.liveResubmissionsUnsubscribe = onValue(
           resubmissionsRef,
           () => {
             if (!this.hasLiveUsersSnapshot) return
-            this.fetchUsers({
+            this.queueUsersFetch({
               silent: true,
               preserveExistingOnFailure: true,
-            })
+              forceFresh: true,
+            }, 110)
           },
           () => {
             if (!this.hasLiveUsersSnapshot) return
-            this.fetchUsers({ silent: true, preserveExistingOnFailure: true })
+            this.queueUsersFetch({
+              silent: true,
+              preserveExistingOnFailure: true,
+              forceFresh: true,
+            }, 110)
           },
         )
         this.liveAdminReviewQueueUnsubscribe = onValue(
           adminReviewQueueRef,
           () => {
             if (!this.hasLiveUsersSnapshot) return
-            this.fetchUsers({
+            this.queueUsersFetch({
               silent: true,
               preserveExistingOnFailure: true,
-            })
+              forceFresh: true,
+            }, 110)
           },
           () => {
             if (!this.hasLiveUsersSnapshot) return
-            this.fetchUsers({ silent: true, preserveExistingOnFailure: true })
+            this.queueUsersFetch({
+              silent: true,
+              preserveExistingOnFailure: true,
+              forceFresh: true,
+            }, 110)
           },
         )
       } catch {
@@ -1042,11 +1096,15 @@ export default {
     fetchUsers(options = {}){
       const silent = Boolean(options?.silent)
       const preserveExistingOnFailure = options?.preserveExistingOnFailure !== false
+      const forceFresh = Boolean(options?.forceFresh)
       const requestId = ++this.usersFetchRequestId
       if (!silent && this.users.length === 0) {
         this.isLoadingUsers = true
       }
-      axios.get('/admin/users')
+      axios.get('/admin/users', {
+        params: forceFresh ? { fresh: '1', _ts: Date.now() } : undefined,
+        skipGlobalLoading: true,
+      })
         .then(res=>{
           if (requestId !== this.usersFetchRequestId) return
           const payload = res.data || {}
@@ -1105,44 +1163,6 @@ export default {
           if (requestId === this.usersFetchRequestId) {
             this.isLoadingUsers = false
           }
-        })
-    },
-
-    refreshFromFirebase() {
-      if (this.isRefreshingUsers) {
-        return
-      }
-
-      const currentUsers = Array.isArray(this.users) ? [...this.users] : []
-      this.isRefreshingUsers = true
-      axios.post('/admin/users/refresh-firebase', {}, { skipGlobalLoading: true })
-        .then((res) => {
-          const payload = res.data || {}
-          const refreshedUsers = this.normalizeUsers(payload.users || payload.rows || [])
-          if (refreshedUsers.length > 0) {
-            this.users = refreshedUsers
-          } else if (currentUsers.length > 0) {
-            this.users = currentUsers
-          } else {
-            this.users = refreshedUsers
-          }
-          showAdminFeedbackToast(
-            payload.refreshed ? 'success' : 'error',
-            payload.refreshed ? 'Firebase refreshed' : 'Firebase refresh returned no live users',
-            payload.message || (payload.refreshed ? 'The admin table now shows the latest Firebase users.' : 'No live Firebase users were returned. Keeping the current table if available.'),
-            4200,
-          )
-        })
-        .catch((err) => {
-          showAdminFeedbackToast(
-            'error',
-            'Firebase refresh failed',
-            err.response?.data?.message || 'Could not refresh users from Firebase.',
-            4200,
-          )
-        })
-        .finally(() => {
-          this.isRefreshingUsers = false
         })
     },
 

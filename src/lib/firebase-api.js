@@ -916,11 +916,12 @@ const invalidateCollectionCache = (name) => {
   collectionInflight.delete(name)
 }
 
-const listCollection = async (name) => {
-  const cachedRows = readCollectionCache(name)
+const listCollection = async (name, options = {}) => {
+  const force = Boolean(options?.force)
+  const cachedRows = force ? null : readCollectionCache(name)
   if (cachedRows) return cachedRows
 
-  const inflight = collectionInflight.get(name)
+  const inflight = force ? null : collectionInflight.get(name)
   if (inflight) {
     return clone(await inflight)
   }
@@ -2377,12 +2378,13 @@ const summarizeOperationalDashboard = async () => {
   }
 }
 
-const listUsersForAdmin = async () => {
+const listUsersForAdmin = async (options = {}) => {
+  const force = Boolean(options?.force)
   const [profiles, resubmissions, employees, adminReviewQueue] = await Promise.all([
     listProfiles(),
-    listCollection('resubmissions').catch(() => []),
-    listCollection('employees').catch(() => []),
-    listCollection('admin_review_queue').catch(() => []),
+    listCollection('resubmissions', { force }).catch(() => []),
+    listCollection('employees', { force }).catch(() => []),
+    listCollection('admin_review_queue', { force }).catch(() => []),
   ])
   const resubmissionMap = new Map()
   ;(Array.isArray(resubmissions) ? resubmissions : []).forEach((entry) => {
@@ -3200,12 +3202,13 @@ const buildUploadedFileMeta = (upload, file, timestamp = nowIso()) => {
 const handleGet = async (config, info) => {
   const { source, segments, first } = info
   const { isAdminUsers, id: adminUserId, action: adminUserAction } = getAdminUsersPathInfo(segments)
+  const forceFreshAdminUsers = parseBooleanFlag(config?.params?.fresh)
 
   if (source === '/admin/users' || source === '/admin/users/list') {
-    return await listUsersForAdmin()
+    return await listUsersForAdmin({ force: forceFreshAdminUsers })
   }
   if (isAdminUsers && adminUserId && !adminUserAction) {
-    const users = await listUsersForAdmin()
+    const users = await listUsersForAdmin({ force: forceFreshAdminUsers })
     return findProfileById(users, adminUserId) || {}
   }
 
@@ -4001,7 +4004,7 @@ const handleWrite = async (config, info) => {
   }
 
   if (source === '/admin/users/refresh-firebase') {
-    const users = await listUsersForAdmin()
+    const users = await listUsersForAdmin({ force: true })
     return { message: 'Firebase users refreshed.', users, rows: users, refreshed: users.length > 0 }
   }
 
