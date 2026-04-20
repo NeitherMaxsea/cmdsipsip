@@ -1,0 +1,22 @@
+<IfModule mod_headers.c>
+  <FilesMatch "^(index\.html|runtime-config\.js)$">
+    Header set Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  RewriteRule ^runtime-config\.js$ - [L]
+  RewriteRule ^assets/ - [L]
+  RewriteRule ^images/ - [L]
+  RewriteRule ^favicon\.ico$ - [L]
+  RewriteRule ^robots\.txt$ - [L]
+
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule . /index.html [L]
+</IfModule>
