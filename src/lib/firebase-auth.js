@@ -53,6 +53,8 @@ const nowIso = () => new Date().toISOString()
 const DEV_ADMIN_EMAIL = 'admin@thesis.local'
 const DEV_ADMIN_EMAIL_ALIASES = new Set([DEV_ADMIN_EMAIL, 'admin@thesis.com'])
 const EMAIL_ADDRESS_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i
+const RESERVED_EMAIL_DOMAINS = new Set(['localhost'])
+const RESERVED_EMAIL_TLDS = new Set(['example', 'invalid', 'local', 'localhost', 'test'])
 const STRONG_PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/
 const DEV_ADMIN_PROFILE = {
   first_name: 'Admin',
@@ -74,7 +76,28 @@ const normalizeEmail = (value) => String(value ?? '')
   .replace(/\s+/g, '')
   .trim()
   .toLowerCase()
-const isValidEmailAddress = (value) => EMAIL_ADDRESS_REGEX.test(normalizeEmail(value))
+const getEmailDomain = (value) => normalizeEmail(value).split('@')[1] || ''
+const hasPublicEmailDomain = (value) => {
+  const domain = getEmailDomain(value)
+  if (!domain || domain.startsWith('.') || domain.endsWith('.') || domain.includes('..')) {
+    return false
+  }
+  if (RESERVED_EMAIL_DOMAINS.has(domain)) {
+    return false
+  }
+
+  const labels = domain.split('.').filter(Boolean)
+  if (labels.length < 2) {
+    return false
+  }
+
+  const tld = labels[labels.length - 1]
+  return tld.length >= 2 && !RESERVED_EMAIL_TLDS.has(tld)
+}
+const isValidEmailAddress = (value) => {
+  const normalized = normalizeEmail(value)
+  return EMAIL_ADDRESS_REGEX.test(normalized) && hasPublicEmailDomain(normalized)
+}
 const STORAGE_SAFE_URL_MAX_LENGTH = 2048
 const isPlainObject = (value) => Object.prototype.toString.call(value) === '[object Object]'
 const sanitizeFirebaseValue = (value) => {
@@ -1159,6 +1182,8 @@ export const checkEmailAvailability = async (email) => {
   const reason = String(probe?.reason || '').trim()
   const message = reason === 'missing_email'
     ? 'Email address is required.'
+    : reason === 'invalid_email'
+      ? 'Please enter a valid email address.'
     : 'Unable to verify email availability right now. Please check your Firebase Auth and Realtime Database access, then try again.'
 
   const error = new Error(message)
@@ -1169,11 +1194,14 @@ export const checkEmailAvailability = async (email) => {
 
 export const probeEmailAvailability = async (email, options = {}) => {
   const preferServer = options.preferServer !== false
-  ensureFirebaseReady()
   const normalizedEmail = normalizeAuthEmail(email)
   if (!normalizedEmail) {
     return { available: false, verified: false, reason: 'missing_email' }
   }
+  if (!isValidEmailAddress(normalizedEmail)) {
+    return { available: false, verified: false, reason: 'invalid_email' }
+  }
+  ensureFirebaseReady()
 
   let authCheckFailed = false
   try {

@@ -14,7 +14,38 @@ const OTP_EXPIRY_MS = 10 * 60 * 1000;
 
 const encodeKey = (value) => String(value || '').trim().toLowerCase().replace(/[.#$/\[\]]/g, '_');
 
-const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+const EMAIL_ADDRESS_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
+const RESERVED_EMAIL_DOMAINS = new Set(['localhost']);
+const RESERVED_EMAIL_TLDS = new Set(['example', 'invalid', 'local', 'localhost', 'test']);
+
+const normalizeEmail = (value) => String(value || '')
+  .normalize('NFKC')
+  .replace(/[\u200B-\u200D\uFEFF]/g, '')
+  .replace(/\s+/g, '')
+  .trim()
+  .toLowerCase();
+const getEmailDomain = (value) => normalizeEmail(value).split('@')[1] || '';
+const hasPublicEmailDomain = (value) => {
+  const domain = getEmailDomain(value);
+  if (!domain || domain.startsWith('.') || domain.endsWith('.') || domain.includes('..')) {
+    return false;
+  }
+  if (RESERVED_EMAIL_DOMAINS.has(domain)) {
+    return false;
+  }
+
+  const labels = domain.split('.').filter(Boolean);
+  if (labels.length < 2) {
+    return false;
+  }
+
+  const tld = labels[labels.length - 1];
+  return tld.length >= 2 && !RESERVED_EMAIL_TLDS.has(tld);
+};
+const isValidEmailAddress = (value) => {
+  const normalized = normalizeEmail(value);
+  return EMAIL_ADDRESS_REGEX.test(normalized) && hasPublicEmailDomain(normalized);
+};
 const normalizeContactNumber = (value) => {
   let digits = String(value || '').trim().replace(/\D/g, '');
   if (digits.startsWith('63')) digits = digits.slice(2);
@@ -81,6 +112,9 @@ const checkEmailAvailabilityWithAdmin = async (rawEmail) => {
   const email = normalizeEmail(rawEmail);
   if (!email) {
     return { available: false, verified: false, reason: 'missing_email' };
+  }
+  if (!isValidEmailAddress(email)) {
+    return { available: false, verified: false, reason: 'invalid_email' };
   }
 
   try {
@@ -162,8 +196,8 @@ const sendOtpEmail = async ({ email, role, contactNumber }) => {
     hasContact: Boolean(contactNumber),
   });
 
-  if (!email || !email.endsWith('.com')) {
-    throw new functions.https.HttpsError('invalid-argument', 'Email must end with ".com".');
+  if (!isValidEmailAddress(email)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Please enter a valid email address.');
   }
 
   const otp = `${Math.floor(100000 + Math.random() * 900000)}`;

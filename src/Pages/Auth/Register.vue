@@ -645,12 +645,36 @@ const DUPLICATE_EMAIL_MESSAGE = 'This email is already taken.'
 const LEGACY_DUPLICATE_EMAIL_MESSAGE = 'This email is already registered.'
 const DUPLICATE_CONTACT_MESSAGE = 'Existing contact number detected. This mobile number is already registered.'
 const EMAIL_AVAILABLE_MESSAGE = 'This email is available.'
+const RESERVED_EMAIL_DOMAINS = new Set(['localhost'])
+const RESERVED_EMAIL_TLDS = new Set(['example', 'invalid', 'local', 'localhost', 'test'])
 const normalizeEmailInput = (value) => String(value || '')
   .normalize('NFKC')
   .replace(/[\u200B-\u200D\uFEFF]/g, '')
   .replace(/\s+/g, '')
   .trim()
   .toLowerCase()
+const getEmailDomain = (value) => normalizeEmailInput(value).split('@')[1] || ''
+const hasPublicEmailDomain = (value) => {
+  const domain = getEmailDomain(value)
+  if (!domain || domain.startsWith('.') || domain.endsWith('.') || domain.includes('..')) {
+    return false
+  }
+  if (RESERVED_EMAIL_DOMAINS.has(domain)) {
+    return false
+  }
+
+  const labels = domain.split('.').filter(Boolean)
+  if (labels.length < 2) {
+    return false
+  }
+
+  const tld = labels[labels.length - 1]
+  return tld.length >= 2 && !RESERVED_EMAIL_TLDS.has(tld)
+}
+const isValidRegistrationEmail = (value) => {
+  const normalized = normalizeEmailInput(value)
+  return EMAIL_REGEX.test(normalized) && hasPublicEmailDomain(normalized)
+}
 const getNormalizedFormEmail = () => normalizeEmailInput(form.email)
 const getNormalizedFormContact = () => String(form.contact_number || '').trim()
 const clearVerifiedIdentityAvailability = () => {
@@ -779,7 +803,7 @@ const checkEmailAvailability = async () => {
     return false
   }
 
-  if (!EMAIL_REGEX.test(email)) {
+  if (!isValidRegistrationEmail(email)) {
     form.setError('email', INVALID_EMAIL_MESSAGE)
     emailIsAvailable.value = false
     return false
@@ -912,7 +936,7 @@ const sendOtp = async () => {
     Swal.fire('Oops','Please enter contact number','warning')
     return false
   }
-  if (!EMAIL_REGEX.test(normalizedEmail)) {
+  if (!isValidRegistrationEmail(normalizedEmail)) {
     form.setError('email', INVALID_EMAIL_MESSAGE)
     Swal.fire('Invalid Email', INVALID_EMAIL_MESSAGE, 'warning')
     return false
@@ -1134,7 +1158,7 @@ const validateEmailAvailabilityOnBlur = async () => {
   if (String(form.email || '') !== email) {
     form.email = email
   }
-  if (!email || email.length > MAX_EMAIL_LENGTH || !EMAIL_REGEX.test(email)) return
+  if (!email || email.length > MAX_EMAIL_LENGTH || !isValidRegistrationEmail(email)) return
   await checkEmailAvailability()
 }
 const validateContactAvailabilityOnBlur = async () => {
@@ -1252,7 +1276,7 @@ const validateStep = (s) => {
       errors.email = 'Email address is required.'
     } else if (normalizedEmail.length > MAX_EMAIL_LENGTH) {
       errors.email = `Email address must not be greater than ${MAX_EMAIL_LENGTH} characters.`
-    } else if (!EMAIL_REGEX.test(normalizedEmail)) {
+    } else if (!isValidRegistrationEmail(normalizedEmail)) {
       errors.email = INVALID_EMAIL_MESSAGE
     }
 
@@ -1781,6 +1805,7 @@ onBeforeUnmount(()=>{
               <div :class="fieldCardClass('email')" class="mb-3 flex flex-col gap-1 [&>label]:font-semibold [&>label]:text-teal-700">
                 <label>Email Address</label>
                 <TextInput v-model="form.email" :class="textInputClass('email')" required @blur="validateEmailAvailabilityOnBlur"/>
+                <p class="text-xs text-slate-500 mt-1">Use a public email domain like gmail.com, yahoo.com, outlook.com, or .com.ph.</p>
                 <p v-if="form.errors.email" class="text-rose-600 text-xs mt-1">{{ form.errors.email }}</p>
               </div>
               <div :class="fieldCardClass('contact_number')" class="mb-3 flex flex-col gap-1 [&>label]:font-semibold [&>label]:text-teal-700">
@@ -2012,6 +2037,7 @@ onBeforeUnmount(()=>{
               <div :class="fieldCardClass('email')" class="mb-3 flex flex-col gap-1 [&>label]:font-semibold [&>label]:text-teal-700">
                 <label>Email Address</label>
                 <TextInput v-model="form.email" :class="textInputClass('email')" required @blur="validateEmailAvailabilityOnBlur"/>
+                <p class="text-xs text-slate-500 mt-1">Use a public email domain like gmail.com, yahoo.com, outlook.com, or .com.ph.</p>
                 <p v-if="form.errors.email" class="text-rose-600 text-xs mt-1">{{ form.errors.email }}</p>
               </div>
               <div :class="fieldCardClass('contact_number')" class="mb-3 flex flex-col gap-1 [&>label]:font-semibold [&>label]:text-teal-700">
