@@ -52,7 +52,7 @@ const fileFields = Object.keys(FILE_FIELD_LABELS)
 const nowIso = () => new Date().toISOString()
 const DEV_ADMIN_EMAIL = 'admin@thesis.local'
 const DEV_ADMIN_EMAIL_ALIASES = new Set([DEV_ADMIN_EMAIL, 'admin@thesis.com'])
-const EMAIL_DOTCOM_REGEX = /^[^\s@]+@[^\s@]+\.com$/i
+const EMAIL_ADDRESS_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i
 const STRONG_PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/
 const DEV_ADMIN_PROFILE = {
   first_name: 'Admin',
@@ -68,8 +68,13 @@ const DEV_ADMIN_PROFILE = {
 const trimString = (value) => String(value ?? '').trim()
 const normalizeRole = (role) => trimString(role).toLowerCase().replace(/\s+/g, '_')
 const encodeKey = (value) => trimString(value).toLowerCase().replace(/[.#$/\[\]]/g, '_')
-const normalizeEmail = (value) => trimString(value).toLowerCase()
-const isDotComEmail = (value) => EMAIL_DOTCOM_REGEX.test(normalizeEmail(value))
+const normalizeEmail = (value) => String(value ?? '')
+  .normalize('NFKC')
+  .replace(/[\u200B-\u200D\uFEFF]/g, '')
+  .replace(/\s+/g, '')
+  .trim()
+  .toLowerCase()
+const isValidEmailAddress = (value) => EMAIL_ADDRESS_REGEX.test(normalizeEmail(value))
 const STORAGE_SAFE_URL_MAX_LENGTH = 2048
 const isPlainObject = (value) => Object.prototype.toString.call(value) === '[object Object]'
 const sanitizeFirebaseValue = (value) => {
@@ -94,9 +99,7 @@ const sanitizeFirebaseValue = (value) => {
   return value
 }
 const normalizeAuthEmail = (value) => {
-  const email = normalizeEmail(value)
-  if (email === 'admin@thesis.com') return DEV_ADMIN_EMAIL
-  return email
+  return normalizeEmail(value)
 }
 const normalizeContactNumber = (value) => {
   let digits = trimString(value).replace(/\D/g, '')
@@ -348,7 +351,7 @@ export const getFriendlyFirebaseErrorMessage = (
     return 'Unable to verify email availability right now. Please check your Firebase Auth and Realtime Database access, then try again.'
   }
   if (code.includes('invalid-email') || message.includes('invalid email')) {
-    return 'Please enter a valid email address ending in .com.'
+    return 'Please enter a valid email address.'
   }
   if (code.includes('weak-password') || message.includes('weak password')) {
     return 'Your password is too weak. Use at least 8 characters with uppercase, lowercase, number, and special character.'
@@ -1318,8 +1321,8 @@ export const createStaffAuthUser = async ({ email, password, displayName }) => {
 export const sendRegistrationOtp = async ({ email, role, contactNumber }) => {
   ensureFirebaseReady()
   const normalizedEmail = normalizeAuthEmail(email)
-  if (!isDotComEmail(normalizedEmail)) {
-    throw new Error('Email must end with ".com".')
+  if (!isValidEmailAddress(normalizedEmail)) {
+    throw new Error('Please enter a valid email address.')
   }
   const availableEmail = await checkEmailAvailability(normalizedEmail)
   if (!availableEmail) {
@@ -1475,8 +1478,8 @@ const normalizeRegistrationPayload = (form) => {
 export const registerWithFirebase = async (form) => {
   ensureFirebaseReady()
   const payload = normalizeRegistrationPayload(form)
-  if (!isDotComEmail(payload.email)) {
-    throw new Error('Email must end with ".com".')
+  if (!isValidEmailAddress(payload.email)) {
+    throw new Error('Please enter a valid email address.')
   }
   const available = await checkEmailAvailability(payload.email)
   if (!available) {
