@@ -122,7 +122,9 @@ const sanitizeFirebaseValue = (value) => {
   return value
 }
 const normalizeAuthEmail = (value) => {
-  return normalizeEmail(value)
+  const email = normalizeEmail(value)
+  if (email === 'admin@thesis.com') return DEV_ADMIN_EMAIL
+  return email
 }
 const normalizeContactNumber = (value) => {
   let digits = trimString(value).replace(/\D/g, '')
@@ -375,6 +377,18 @@ export const getFriendlyFirebaseErrorMessage = (
   }
   if (code.includes('invalid-email') || message.includes('invalid email')) {
     return 'Please enter a valid email address.'
+  }
+  if (
+    code.includes('invalid-credential')
+    || code.includes('invalid-login-credentials')
+    || code.includes('wrong-password')
+    || code.includes('user-not-found')
+    || message.includes('invalid credential')
+    || message.includes('invalid login credentials')
+    || message.includes('wrong password')
+    || message.includes('user not found')
+  ) {
+    return 'Invalid email or password.'
   }
   if (code.includes('weak-password') || message.includes('weak password')) {
     return 'Your password is too weak. Use at least 8 characters with uppercase, lowercase, number, and special character.'
@@ -1650,7 +1664,18 @@ export const loginWithFirebase = async ({ email, password, remember = false }) =
   const persistence = remember ? browserLocalPersistence : browserSessionPersistence
   await setPersistence(firebaseAuth, persistence)
   const normalizedEmail = normalizeAuthEmail(email)
-  const credential = await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, password)
+  let credential = null
+  try {
+    credential = await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, password)
+  } catch (error) {
+    throw new Error(
+      getFriendlyFirebaseErrorMessage(
+        error,
+        'Login failed. Please check your email and password.',
+        'login',
+      ),
+    )
+  }
   let profile = await fetchUserProfile(credential.user.uid, credential.user.email || normalizedEmail)
   if (!profile && isDevAdminEmail(normalizedEmail)) {
     profile = buildDevAdminProfile(credential.user.uid, credential.user.email || email)
