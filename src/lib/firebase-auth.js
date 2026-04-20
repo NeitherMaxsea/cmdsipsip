@@ -561,8 +561,13 @@ const canUseHttpFunctionsFallback = () => {
 }
 const canUseLocalDevelopmentOtpFallback = () => {
   if (typeof window === 'undefined') return false
+  if (!shouldUseFirebaseFunctionsEmulator) return false
   if (!resolveBooleanClientEnvValue('VITE_ENABLE_LOCAL_DEV_OTP_FALLBACK')) return false
   return Boolean(import.meta.env?.DEV) && isLocalDevelopmentHost(window.location?.hostname)
+}
+const shouldUseLegacyOtpRuleFallback = (error) => {
+  const message = String(error?.message || error?.details?.message || '').toLowerCase()
+  return message.includes('email must end with ".com"')
 }
 const createLocalDevelopmentOtpFallback = ({ email, role, contactNumber, error } = {}) => {
   const normalizedEmail = normalizeAuthEmail(email)
@@ -1573,24 +1578,6 @@ export const sendRegistrationOtp = async ({ email, role, contactNumber }) => {
   }
   clearOtpSession(normalizedEmail)
 
-  if (canUseHttpFunctionsFallback() && !shouldUseFirebaseFunctionsEmulator) {
-    try {
-      return await sendRegistrationOtpViaHttp(payload)
-    } catch (httpError) {
-      const httpCode = String(httpError?.code || '').toLowerCase()
-      if (
-        !httpCode.includes('network-request-failed')
-        && !httpCode.includes('permission')
-        && !httpCode.includes('internal')
-        && !httpCode.includes('unavailable')
-        && !httpCode.includes('not-found')
-        && !httpCode.startsWith('http/')
-      ) {
-        throw new Error(getFriendlyFirebaseErrorMessage(httpError, 'Failed to send OTP email.', 'otp'))
-      }
-    }
-  }
-
   const callable = getOtpCallable()
   try {
     const result = await callable(payload)
@@ -1608,11 +1595,29 @@ export const sendRegistrationOtp = async ({ email, role, contactNumber }) => {
         try {
           return await sendRegistrationOtpViaHttp(payload)
         } catch (fallbackError) {
+          if (canUseLocalDevelopmentOtpFallback() && shouldUseLegacyOtpRuleFallback(fallbackError)) {
+            return createLocalDevelopmentOtpFallback({
+              ...payload,
+              error: fallbackError,
+            })
+          }
           throw new Error(getFriendlyFirebaseErrorMessage(fallbackError, 'Failed to send OTP email.', 'otp'))
         }
       }
     }
-    if (canUseLocalDevelopmentOtpFallback()) {
+    if (canUseLocalDevelopmentOtpFallback() && shouldUseLegacyOtpRuleFallback(error)) {
+      return createLocalDevelopmentOtpFallback({
+        ...payload,
+        error,
+      })
+    }
+    if (canUseLocalDevelopmentOtpFallback() && (
+      code.includes('network-request-failed')
+      || code.includes('permission')
+      || code.includes('internal')
+      || code.includes('unavailable')
+      || code.includes('not-found')
+    )) {
       return createLocalDevelopmentOtpFallback({
         ...payload,
         error,
